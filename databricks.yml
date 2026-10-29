@@ -1,0 +1,28 @@
+# Declarative Automation Bundle (formerly "Databricks Asset Bundle").
+# Deploys the job and the declarative pipeline as code:
+#   databricks bundle validate
+#   databricks bundle deploy -t dev
+#   databricks bundle run fsa_daily_load -t dev --params batch_day=5
+bundle:
+  name: fsa_lakehouse
+
+include:
+  - resources/*.yml
+
+variables:
+  catalog:
+    description: Unity Catalog catalog for all FSA tables
+    default: fsa
+
+targets:
+  dev:
+    mode: development        # prefixes resource names with [dev <you>], pauses schedules
+    default: true
+    workspace:
+      host: https://<your-workspace>.cloud.databricks.com   # replace with your workspace URL
+  # prod:
+  #   mode: production
+  #   workspace:
+  #     host: https://<prod-workspace>
+  #   run_as:
+  #     service_principal_name: <sp-application-id>
