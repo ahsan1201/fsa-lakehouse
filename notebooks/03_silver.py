@@ -21,15 +21,23 @@ sys.path.append(os.path.abspath("../src"))
 from delta.tables import DeltaTable
 from pyspark.sql import functions as F
 
-import fsa_lakehouse
 from fsa_lakehouse import config as C
 from fsa_lakehouse import transforms as T
 from fsa_lakehouse.streaming import run_with_schema_restart
 
-# On serverless, foreachBatch functions run in a separate Python process that can't import
-# modules from your workspace folder. Shipping the package "by value" with the function fixes that.
-from pyspark import cloudpickle
-cloudpickle.register_pickle_by_value(fsa_lakehouse)
+# On serverless, foreachBatch functions run in a SEPARATE Python process (the streaming runner).
+# That process doesn't know about the sys.path change above, so it can't find `fsa_lakehouse`.
+# Fix: pass the folder path as a plain string, and import the project code inside the functions.
+SRC_PATH = os.path.abspath("../src")
+AUDIT_TABLE = C.OPS_RUN_AUDIT
+
+
+def load_project():
+    import sys
+    if SRC_PATH not in sys.path:
+        sys.path.insert(0, SRC_PATH)
+    from fsa_lakehouse import config, transforms
+    return config, transforms
 
 # COMMAND ----------
 
@@ -61,10 +69,11 @@ def audit(sess, layer, entity, batch_id, rows_in, valid, quarantined, deduped):
         "layer string, entity string, batch_id long, rows_in long, rows_valid long, "
         "rows_quarantined long, rows_after_dedupe long")
      .withColumn("run_ts", F.current_timestamp())
-     .write.mode("append").option("mergeSchema", "true").saveAsTable(C.OPS_RUN_AUDIT))
+     .write.mode("append").option("mergeSchema", "true").saveAsTable(AUDIT_TABLE))
 
 
 def upsert_producers(batch_df, batch_id):
+    C, T = load_project()   # runs inside the streaming runner
     sess = batch_df.sparkSession
     updates = T.standardize_producers(batch_df).filter(F.col("producer_id").isNotNull())
     current = sess.table(C.SILVER_PRODUCERS).filter("is_current = true")
@@ -109,8 +118,9 @@ SILVER_PAYMENT_COLS = [
 
 
 def upsert_payments(batch_df, batch_id):
+    C, T = load_project()   # runs inside the streaming runner
     sess = batch_df.sparkSession
-    flagged = T.add_dq_flags(T.standardize_payments(batch_df)).cache()
+    flagged = T.add_dq_flags(T.standardize_payments(batch_df))
     valid, quarantine = T.split_valid_quarantine(flagged)
 
     deduped = T.dedupe_latest(valid, ["payment_id"], "extracted_at")
@@ -135,7 +145,6 @@ def upsert_payments(batch_df, batch_id):
 
     audit(sess, "silver", "payments", batch_id,
           flagged.count(), valid.count(), quarantine.count(), deduped.count())
-    flagged.unpersist()
 
 
 def start_payments():
